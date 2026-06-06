@@ -1,205 +1,47 @@
 # matter-weather-sensor
 
-Turn a **free weather API into Matter sensors**.
+Free weather APIs, exposed as Matter sensors.
 
-Point it at a latitude/longitude and it exposes the weather there as ordinary
-Matter sensors to [matter_webcontrol](https://github.com/dongnh/matter_webcontrol):
+Point it at a latitude and longitude. Run it on the home server. The weather at that point shows up in Apple Home, in `matter_webcontrol`, and in anything built on top — as ordinary Matter temperature, humidity, pressure, rain, and illuminance sensors.
 
-| Sensor | Source | Matter representation |
-|--------|--------|-----------------------|
-| **Temperature** | Open-Meteo (ECMWF), optional METAR blend | TemperatureMeasurement |
-| **Humidity** | Open-Meteo | RelativeHumidityMeasurement |
-| **Pressure** | Open-Meteo `pressure_msl`, optional METAR QNH | PressureMeasurement |
-| **Rain** | RainViewer radar → METAR → Open-Meteo | Rain Sensor (0x0044) / contact / occupancy |
-| **Brightness** | Open-Meteo `shortwave_radiation` → lux | IlluminanceMeasurement |
+## Overview
 
-From there they flow into `/api/sensors`, `/api/climate`, Apple Home, and anything
-built on top like [light_programmer](https://github.com/dongnh/light_programmer) —
-e.g. "if it's raining, …" or "if it's over 33 °C outside, …".
+One small service, one outbound internet connection, one config file. It polls public weather APIs on an interval and presents the result as a Matter logical bridge. The `matter_webcontrol` host polls the bridge and surfaces the readings on `/api/sensors`, `/api/climate`, and Apple Home. Consumers like `light_programmer` then gate automations on real outdoor conditions — raining, bright, hot — without a single hardware sensor outside.
 
-It's the weather sibling of
-[matter-appletv-presence](https://github.com/dongnh/matter-appletv-presence) and
-[matter-mac-presence](https://github.com/dongnh/matter-mac-presence): same
-logical-bridge / SSE shape, different signal source — here the source is a public
-weather API rather than a device on the LAN.
+It is the weather sibling of `matter-appletv-presence` and `matter-mac-presence`. Same logical-bridge shape, same SSE contract. The signal source is a public weather API instead of a device on the LAN.
 
 ## How it works
 
-One small service runs on an always-on host with outbound internet (the home
-server). On an interval it polls the weather API and serves the result; the
-matter_webcontrol bridge polls *it* and presents Matter sensors.
+Each Matter sensor corresponds to a coordinate and a set of fields. Temperature, humidity, and pressure come from Open-Meteo, with ECMWF (`ecmwf_ifs025`) as the default model — it tracks the Noi Bai (VVNB) observation in Hanoi within a degree, while GFS and JMA drift two degrees warm and several percent dry. A METAR station can be named to override the model for temperature and pressure with the real hourly observation; humidity stays on the model at the exact coordinate.
 
-```
- weather API            home server (the service)            matter_webcontrol      Apple Home / light_programmer
- ┌──────────┐  https   ┌──────────────────────────┐ /api/bridge ┌──────────────┐  ┌────────────────────────────┐
- │ Open-Meteo│ ◄──────►│ matter-weather-sensor      │ ◄─ip,port─ │ polls this   │─►│ temp / humidity / pressure │
- │ (+ METAR) │  poll   │ serve (logical bridge)     │  poll/SSE   │ bridge,      │  │ rain / brightness, /climate│
- └──────────┘          │ maps reading -> Matter raw │ ──────────►│ exposes them │  └────────────────────────────┘
-                       └──────────────────────────┘             └──────────────┘
-```
+Rain is harder. Matter has no precipitation cluster, and 25 km model grids mistime convective showers. The service resolves rain in priority order and takes the first definite answer. Weather radar from RainViewer is sampled at the exact coordinate first — the most accurate "is it raining here, now" at five to ten minute latency. METAR present-weather is the fallback when radar is unavailable. Open-Meteo precipitation is the final backstop. The radar tile is a PNG; the service decodes it with the Python standard library, with no extra dependency, and reads the colour of the pixel under the coordinate. That colour maps to dBZ and to a rain rate via the Marshall–Palmer relation, then buckets to light, moderate, heavy, or violent. The binary contact stays binary; the intensity, rate, and dBZ ride alongside as informational fields.
+
+Brightness comes from Open-Meteo shortwave radiation, converted to lux through a configurable luminous efficacy and encoded with the Matter illuminance log scale. Apple Home displays it as a Light Sensor.
+
+The rain channel can present as Matter's dedicated Rain Sensor (device type 0x0044, the default), as a Contact sensor, or as an Occupancy sensor — whichever shape the downstream consumer expects.
 
 ## Sensors
 
-Each entry in `sensors` is one Matter device. Give each its own `id` and a
-`fields` list, so a "Rain" sensor and a "Brightness" sensor show up as separate
-accessories (or combine fields into one device — your call).
+- Temperature — Open-Meteo ECMWF, optional METAR station blend.
+- Humidity — Open-Meteo at the exact coordinate.
+- Pressure — Open-Meteo MSL, optional METAR QNH blend.
+- Rain — RainViewer radar, with METAR and model as fallbacks; intensity surfaced as light, moderate, heavy, or violent.
+- Brightness — Open-Meteo shortwave radiation, mapped to lux.
 
-### Temperature / humidity / pressure — and why ECMWF
+## Installation
 
-Measured live against the Noi Bai (VVNB) station observation for Hanoi, the
-global models differ a lot:
+The only dependency is `aiohttp`. Install the package, copy `bridge.sample.json` to `bridge.json`, set the coordinates and field list, and verify the readings with the bundled `test` subcommand before going live — it prints human values next to the raw Matter integers. Then run the service. Register it with `matter_webcontrol` once; the host caches the bridge and the sensors appear on `/api/sensors`, `/api/devices`, and `/api/climate`. On macOS, the included `deploy/home.weather.sensor.plist` runs the service under launchd. The default listening port is 8093.
 
-| Model (Open-Meteo)   | Temp error | Humidity |
-|----------------------|-----------:|---------:|
-| **ECMWF** (`ecmwf_ifs025`) | **−0.7 °C** | within a few % |
-| ICON (`icon_global`) | +0.3 °C | close |
-| GFS (`gfs_global`)   | +1.3 °C | too dry |
-| JMA (`jma_gsm`)      | +2.2 °C | far too dry |
+A short reference of every config key — poll interval, model id, METAR station and fields, rain sources and threshold, rain state shape, radar sampling tunables — lives in `bridge.sample.json` alongside the defaults.
 
-So the default model is **ECMWF**. Optionally set a `metar_station` (e.g.
-`"VVNB"`): the station's **real hourly observation** then overrides the model for
-`metar_fields` (default temperature + pressure) — point-truth blended into the
-smoother model output. Humidity is left to the model at your exact coordinates.
+## A note on scope
 
-### Rain
+This reports outdoor weather at a point. It is the right input for automations and for Home display. It is not a room sensor, and it should not be the climate input that drives an air conditioner. Keep a real indoor sensor for that.
 
-Matter has no precipitation cluster, so rain surfaces as a **binary** "is it
-raining now". Because model precipitation is the *weakest* signal for Hanoi's
-local convective showers (the ~25 km ECMWF grid mistimes and smears them), rain
-is resolved from `rain_sources` in **priority order** — the first source with a
-definite answer wins:
+## Related projects
 
-1. **`rainviewer`** — real **weather radar** sampled at your exact coordinate via
-   [RainViewer](https://www.rainviewer.com)'s free, key-less tiles (Vietnam has
-   10 radars in the mosaic). The most accurate "is it raining *here, now*"; ~5–10
-   min latency. Falls through if the tile/API is unavailable.
-2. **`metar`** — the configured `metar_station`'s **present-weather** report
-   (`RA`/`SHRA`/`TSRA` = raining). A real observation, but at the airport and
-   hourly. Needs `metar_station` set.
-3. **`model`** — Open-Meteo `precipitation` ≥ `rain_threshold_mm` (default `0.1`).
-   Always available, so it's the final backstop.
+- [matter_webcontrol](https://github.com/dongnh/matter_webcontrol) — the Matter host this bridge registers with.
+- [light_programmer](https://github.com/dongnh/light_programmer) — schedule engine that gates rain overrides on the `rain` sensor exposed here.
+- [matter-appletv-presence](https://github.com/dongnh/matter-appletv-presence) and [matter-mac-presence](https://github.com/dongnh/matter-mac-presence) — sibling logical bridges for presence.
 
-> How it reads radar: RainViewer's free tier serves only raster tiles, so the
-> service downloads the radar tile covering your point and reads the pixel there
-> (decoding the PNG with the Python stdlib — no extra dependency). A fully opaque
-> pixel = a real echo; the faint semi-transparent "trace" layer is ignored.
-
-Choose how the result appears with `rain_state`:
-
-- `"rain"` (default) → a **dedicated rain state key** matching Matter's Rain
-  Sensor device type (0x0044, a BooleanState sensor); `1` = raining.
-  `matter_webcontrol` recognises it (`hardware_type: "rain_sensor"`) and
-  light_programmer registers/gates on it like any sensor.
-- `"contact"` → piggyback on the **Contact / BooleanState** cluster.
-- `"occupancy"` → an **Occupancy** sensor (for consumers that only read occupancy).
-
-**Rain intensity.** Beyond the yes/no, the radar source reads the *colour* of the
-echo at your point — RainViewer renders reflectivity as a colour ramp (light cyan
-→ blue → yellow → orange → red → magenta). That colour is mapped to **dBZ** and to
-a **rain rate (mm/h)** via the Marshall-Palmer relation, then bucketed into a
-level: `light` / `moderate` / `heavy` / `violent`. (METAR contributes a coarse
-level from its `-`/`+` intensity prefix; the model from its mm.) Matter has no
-precipitation-rate cluster, so the binary contact/occupancy is unchanged — the
-intensity is exposed as **informational** fields on `/api/sensor`, `/api/health`
-and the `test` output:
-
-```bash
-matter-weather-sensor test --config bridge.json
-# dev_rain_hanoi (Hanoi Rain): RAIN[rainviewer] heavy ~12mm/h 40dBZ
-```
-
-```jsonc
-// GET /api/sensor?id=dev_rain_hanoi
-{ "id": "dev_rain_hanoi", "contact": 1,
-  "rain_intensity": "heavy", "rain_rate_mm_h": 11.5, "rain_dbz": 40.0 }
-```
-
-`/api/health` additionally shows which source decided (`rain_source`) and the raw
-METAR present-weather (`wx`), so you can see *why* it says rain or dry.
-
-### Brightness (illuminance)
-
-Outdoor brightness comes from Open-Meteo `shortwave_radiation` (W/m²) ×
-`lux_per_wm2` (default `120`, the luminous efficacy of daylight) → lux, encoded
-with the Matter illuminance log scale. Apple Home shows it as a Light Sensor in
-lux; a bright midday is ~80–100k lux, overcast a few thousand, night ~0.
-
-## Set it up
-
-Install (only needs `aiohttp`):
-
-```bash
-pip install -e .
-```
-
-Copy `bridge.sample.json` to `bridge.json` and set your coordinates. Verify the
-readings before serving (prints human values + the raw Matter integers):
-
-```bash
-matter-weather-sensor test --config bridge.json
-# dev_weather_hanoi    (Hanoi Weather):    33.3C  68%RH  1004hPa
-#   matter raw: {'temperature': 3330, 'humidity': 6800, 'pressure': 1004}
-# dev_rain_hanoi       (Hanoi Rain):       dry[rainviewer]
-#   matter raw: {'contact': 0}
-# dev_brightness_hanoi (Hanoi Brightness): 88320lux
-#   matter raw: {'illuminance': 49462}
-```
-
-Run the service:
-
-```bash
-matter-weather-sensor serve --config bridge.json
-```
-
-### Register with matter_webcontrol
-
-Once (matter_webcontrol caches it in `bridge_cache.json`):
-
-```bash
-curl 'http://<matter-host>:8080/api/bridge?ip=<this-host>&port=8093'
-```
-
-The sensors then appear in `/api/sensors`, `/api/devices` and `/api/climate`.
-
-### Run it under launchd (macOS home server)
-
-See [`deploy/home.weather.sensor.plist`](deploy/home.weather.sensor.plist) — edit
-the user/paths, copy to `~/Library/LaunchAgents/`, then `bootstrap` + `kickstart`
-as noted in the file.
-
-## Config reference
-
-| key | meaning |
-|-----|---------|
-| `host` / `port` | where this service listens (default `0.0.0.0:8093`). |
-| `poll_interval` | seconds between weather refreshes (default `600`). |
-| `sensors[].latitude/longitude` | the point to read. |
-| `sensors[].fields` | subset of `temperature`, `humidity`, `pressure`, `rain`, `illuminance`. |
-| `sensors[].provider` | `open-meteo` (default) or `metar` (station obs; temp/humidity/pressure only). |
-| `sensors[].model` | Open-Meteo model id; default `ecmwf_ifs025`. |
-| `sensors[].metar_station` / `metar_fields` | blend a real station observation (default temperature, pressure). |
-| `sensors[].rain_sources` | priority list for rain, default `["rainviewer","metar","model"]`. |
-| `sensors[].rain_threshold_mm` | mm of precipitation that counts as "raining" for the `model` source (default `0.1`). |
-| `sensors[].rain_state` | `rain` (default, dedicated Rain Sensor key), `contact`, or `occupancy`. |
-| `sensors[].lux_per_wm2` | radiation→lux factor for brightness (default `120`). |
-| `rainviewer_zoom` / `rainviewer_color` / `rainviewer_window` / `rainviewer_alpha_min` | radar tile sampling tunables (top-level; defaults `7` / `2` / `1` / `250`). |
-
-## Endpoints
-
-| endpoint | purpose |
-|----------|---------|
-| `GET /api/devices` | device list with raw Matter `states` (what matter_webcontrol polls). |
-| `GET /api/sensor?id=` | single sensor's current states. |
-| `GET /api/subscribe?id=` | SSE stream of state changes. |
-| `GET /api/health` | human-readable last readings, for debugging. |
-
-## Notes
-
-This reports **outdoor** weather at a coordinate, not a room. Great for
-automations and Home display; don't use it as the room sensor that drives your
-AC — keep a real indoor climate sensor for that.
-
-Dependencies: `aiohttp` only (the RainViewer PNG tiles are decoded with the
-Python stdlib). Data: [Open-Meteo](https://open-meteo.com) (CC-BY, no key),
-[aviationweather.gov](https://aviationweather.gov) METAR (US NWS, public domain),
-and [RainViewer](https://www.rainviewer.com) radar (free, attribution).
+Data from [Open-Meteo](https://open-meteo.com) (CC-BY), [aviationweather.gov](https://aviationweather.gov) METAR (US NWS, public domain), and [RainViewer](https://www.rainviewer.com) radar (free, attribution).
