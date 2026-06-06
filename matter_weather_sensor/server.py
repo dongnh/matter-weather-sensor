@@ -110,10 +110,17 @@ class WeatherBridge:
             self.state.unsubscribe(dev_id, q)
         return resp
 
-    @staticmethod
-    async def _emit(resp: web.StreamResponse, dev_id: str, states: dict) -> None:
+    async def _emit(self, resp: web.StreamResponse, dev_id: str, states: dict) -> None:
         iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        payload = json.dumps({"id": dev_id, "timestamp": iso, **states})
+        payload_obj = {"id": dev_id, "timestamp": iso, **states}
+        # Carry rain intensity alongside the Matter state (forwarded verbatim by
+        # matter_webcontrol's SSE proxy) — informational, no Matter cluster for it.
+        r = self.state.reading(dev_id)
+        if r is not None and r.raining is not None:
+            payload_obj["rain_intensity"] = r.rain_intensity
+            payload_obj["rain_rate_mm_h"] = r.rain_rate_mm_h
+            payload_obj["rain_dbz"] = r.rain_dbz
+        payload = json.dumps(payload_obj)
         await resp.write(f"data: {payload}\n\n".encode("utf-8"))
 
     async def health(self, request: web.Request) -> web.Response:

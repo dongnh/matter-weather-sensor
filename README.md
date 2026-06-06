@@ -10,7 +10,7 @@ Matter sensors to [matter_webcontrol](https://github.com/dongnh/matter_webcontro
 | **Temperature** | Open-Meteo (ECMWF), optional METAR blend | TemperatureMeasurement |
 | **Humidity** | Open-Meteo | RelativeHumidityMeasurement |
 | **Pressure** | Open-Meteo `pressure_msl`, optional METAR QNH | PressureMeasurement |
-| **Rain** | RainViewer radar → METAR → Open-Meteo | BooleanState (contact) or Occupancy |
+| **Rain** | RainViewer radar → METAR → Open-Meteo | Rain Sensor (0x0044) / contact / occupancy |
 | **Brightness** | Open-Meteo `shortwave_radiation` → lux | IlluminanceMeasurement |
 
 From there they flow into `/api/sensors`, `/api/climate`, Apple Home, and anything
@@ -86,9 +86,12 @@ definite answer wins:
 
 Choose how the result appears with `rain_state`:
 
-- `"contact"` (default) → a **Contact / BooleanState** sensor; value `1` = raining.
-- `"occupancy"` → an **Occupancy** sensor; handy if you want light_programmer's
-  occupancy gating to react to rain.
+- `"rain"` (default) → a **dedicated rain state key** matching Matter's Rain
+  Sensor device type (0x0044, a BooleanState sensor); `1` = raining.
+  `matter_webcontrol` recognises it (`hardware_type: "rain_sensor"`) and
+  light_programmer registers/gates on it like any sensor.
+- `"contact"` → piggyback on the **Contact / BooleanState** cluster.
+- `"occupancy"` → an **Occupancy** sensor (for consumers that only read occupancy).
 
 **Rain intensity.** Beyond the yes/no, the radar source reads the *colour* of the
 echo at your point — RainViewer renders reflectivity as a colour ramp (light cyan
@@ -177,7 +180,7 @@ as noted in the file.
 | `sensors[].metar_station` / `metar_fields` | blend a real station observation (default temperature, pressure). |
 | `sensors[].rain_sources` | priority list for rain, default `["rainviewer","metar","model"]`. |
 | `sensors[].rain_threshold_mm` | mm of precipitation that counts as "raining" for the `model` source (default `0.1`). |
-| `sensors[].rain_state` | `contact` (default) or `occupancy`. |
+| `sensors[].rain_state` | `rain` (default, dedicated Rain Sensor key), `contact`, or `occupancy`. |
 | `sensors[].lux_per_wm2` | radiation→lux factor for brightness (default `120`). |
 | `rainviewer_zoom` / `rainviewer_color` / `rainviewer_window` / `rainviewer_alpha_min` | radar tile sampling tunables (top-level; defaults `7` / `2` / `1` / `250`). |
 

@@ -42,9 +42,11 @@ Fields (subset of these per sensor):
                      "rainviewer" -> real radar at the exact point (best),
                      "metar"      -> station present-weather (needs metar_station),
                      "model"      -> Open-Meteo precipitation >= rain_threshold_mm.
-                   Exposed as a Matter `rain_state` cluster: "contact" (default,
-                   BooleanState) or "occupancy". Matter has no precipitation
-                   cluster, so a binary contact/occupancy is how rain surfaces.
+                   Exposed via `rain_state`: "rain" (default — a dedicated rain
+                   state key matching Matter's Rain Sensor device type 0x0044,
+                   recognized by matter_webcontrol), or "contact"/"occupancy" to
+                   piggyback on those clusters for older consumers. Matter has no
+                   precipitation-rate cluster, so all three are binary.
   - illuminance -> outdoor brightness. Open-Meteo `shortwave_radiation` (W/m^2)
                    x `lux_per_wm2` (default 120, daylight luminous efficacy) ->
                    lux, then the Matter log encoding.
@@ -67,7 +69,7 @@ VALID_FIELDS = ("temperature", "humidity", "pressure", "rain", "illuminance")
 DEFAULT_FIELDS = ["temperature", "humidity", "pressure"]
 # Fields a METAR station observation can supply (no radiation/precip amount).
 METAR_CAPABLE = ("temperature", "humidity", "pressure")
-RAIN_STATES = ("contact", "occupancy")
+RAIN_STATES = ("rain", "contact", "occupancy")
 RAIN_SOURCES = ("rainviewer", "metar", "model")
 DEFAULT_RAIN_SOURCES = ["rainviewer", "metar", "model"]
 
@@ -84,7 +86,7 @@ class SensorConfig:
     metar_station: str = ""
     metar_fields: list[str] = field(default_factory=lambda: ["temperature", "pressure"])
     rain_threshold_mm: float = 0.1
-    rain_state: str = "contact"
+    rain_state: str = "rain"
     rain_sources: list[str] = field(default_factory=lambda: list(DEFAULT_RAIN_SOURCES))
     lux_per_wm2: float = 120.0
 
@@ -106,7 +108,7 @@ class SensorConfig:
             if unsupported:
                 raise ValueError(f"sensor {dev_id!r}: provider 'metar' cannot supply "
                                  f"{', '.join(unsupported)} (only {', '.join(METAR_CAPABLE)})")
-        rain_state = d.get("rain_state", "contact")
+        rain_state = d.get("rain_state", "rain")
         if rain_state not in RAIN_STATES:
             raise ValueError(f"sensor {dev_id!r}: rain_state must be one of {', '.join(RAIN_STATES)}")
         rain_sources = list(d.get("rain_sources", DEFAULT_RAIN_SOURCES))

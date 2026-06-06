@@ -25,7 +25,7 @@
       "metar_station": "VVNB",
       "rain_sources": ["rainviewer", "metar", "model"],
       "rain_threshold_mm": 0.1,
-      "rain_state": "contact"
+      "rain_state": "rain"
     },
     {
       "id": "dev_brightness_hanoi",
