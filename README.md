@@ -10,7 +10,7 @@ Matter sensors to [matter_webcontrol](https://github.com/dongnh/matter_webcontro
 | **Temperature** | Open-Meteo (ECMWF), optional METAR blend | TemperatureMeasurement |
 | **Humidity** | Open-Meteo | RelativeHumidityMeasurement |
 | **Pressure** | Open-Meteo `pressure_msl`, optional METAR QNH | PressureMeasurement |
-| **Rain** | Open-Meteo `precipitation` ≥ threshold | BooleanState (contact) or Occupancy |
+| **Rain** | RainViewer radar → METAR → Open-Meteo | BooleanState (contact) or Occupancy |
 | **Brightness** | Open-Meteo `shortwave_radiation` → lux | IlluminanceMeasurement |
 
 From there they flow into `/api/sensors`, `/api/climate`, Apple Home, and anything
@@ -64,12 +64,34 @@ smoother model output. Humidity is left to the model at your exact coordinates.
 ### Rain
 
 Matter has no precipitation cluster, so rain surfaces as a **binary** "is it
-raining now": Open-Meteo `precipitation` (mm) ≥ `rain_threshold_mm` (default
-`0.1`). Choose how it appears with `rain_state`:
+raining now". Because model precipitation is the *weakest* signal for Hanoi's
+local convective showers (the ~25 km ECMWF grid mistimes and smears them), rain
+is resolved from `rain_sources` in **priority order** — the first source with a
+definite answer wins:
+
+1. **`rainviewer`** — real **weather radar** sampled at your exact coordinate via
+   [RainViewer](https://www.rainviewer.com)'s free, key-less tiles (Vietnam has
+   10 radars in the mosaic). The most accurate "is it raining *here, now*"; ~5–10
+   min latency. Falls through if the tile/API is unavailable.
+2. **`metar`** — the configured `metar_station`'s **present-weather** report
+   (`RA`/`SHRA`/`TSRA` = raining). A real observation, but at the airport and
+   hourly. Needs `metar_station` set.
+3. **`model`** — Open-Meteo `precipitation` ≥ `rain_threshold_mm` (default `0.1`).
+   Always available, so it's the final backstop.
+
+> How it reads radar: RainViewer's free tier serves only raster tiles, so the
+> service downloads the radar tile covering your point and reads the pixel there
+> (decoding the PNG with the Python stdlib — no extra dependency). A fully opaque
+> pixel = a real echo; the faint semi-transparent "trace" layer is ignored.
+
+Choose how the result appears with `rain_state`:
 
 - `"contact"` (default) → a **Contact / BooleanState** sensor; value `1` = raining.
 - `"occupancy"` → an **Occupancy** sensor; handy if you want light_programmer's
   occupancy gating to react to rain.
+
+`/api/health` shows which source decided (`rain_source`) and the raw METAR
+present-weather (`wx`), so you can see *why* it says rain or dry.
 
 ### Brightness (illuminance)
 
@@ -93,10 +115,10 @@ readings before serving (prints human values + the raw Matter integers):
 matter-weather-sensor test --config bridge.json
 # dev_weather_hanoi    (Hanoi Weather):    33.3C  68%RH  1004hPa
 #   matter raw: {'temperature': 3330, 'humidity': 6800, 'pressure': 1004}
-# dev_rain_hanoi       (Hanoi Rain):       dry(0.0mm)
+# dev_rain_hanoi       (Hanoi Rain):       dry[rainviewer]
 #   matter raw: {'contact': 0}
-# dev_brightness_hanoi (Hanoi Brightness): 88440lux
-#   matter raw: {'illuminance': 49467}
+# dev_brightness_hanoi (Hanoi Brightness): 88320lux
+#   matter raw: {'illuminance': 49462}
 ```
 
 Run the service:
@@ -132,9 +154,11 @@ as noted in the file.
 | `sensors[].provider` | `open-meteo` (default) or `metar` (station obs; temp/humidity/pressure only). |
 | `sensors[].model` | Open-Meteo model id; default `ecmwf_ifs025`. |
 | `sensors[].metar_station` / `metar_fields` | blend a real station observation (default temperature, pressure). |
-| `sensors[].rain_threshold_mm` | mm of precipitation that counts as "raining" (default `0.1`). |
+| `sensors[].rain_sources` | priority list for rain, default `["rainviewer","metar","model"]`. |
+| `sensors[].rain_threshold_mm` | mm of precipitation that counts as "raining" for the `model` source (default `0.1`). |
 | `sensors[].rain_state` | `contact` (default) or `occupancy`. |
 | `sensors[].lux_per_wm2` | radiation→lux factor for brightness (default `120`). |
+| `rainviewer_zoom` / `rainviewer_color` / `rainviewer_window` / `rainviewer_alpha_min` | radar tile sampling tunables (top-level; defaults `7` / `2` / `1` / `250`). |
 
 ## Endpoints
 
@@ -151,6 +175,7 @@ This reports **outdoor** weather at a coordinate, not a room. Great for
 automations and Home display; don't use it as the room sensor that drives your
 AC — keep a real indoor climate sensor for that.
 
-Dependencies: `aiohttp`. Data: [Open-Meteo](https://open-meteo.com) (CC-BY, no
-key) and [aviationweather.gov](https://aviationweather.gov) METAR (US NWS, public
-domain).
+Dependencies: `aiohttp` only (the RainViewer PNG tiles are decoded with the
+Python stdlib). Data: [Open-Meteo](https://open-meteo.com) (CC-BY, no key),
+[aviationweather.gov](https://aviationweather.gov) METAR (US NWS, public domain),
+and [RainViewer](https://www.rainviewer.com) radar (free, attribution).

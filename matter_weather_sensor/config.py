@@ -37,11 +37,14 @@ one for brightness) or combine — your choice of `id`/`fields`.
 
 Fields (subset of these per sensor):
   - temperature / humidity / pressure -> Matter temp / humidity / pressure.
-  - rain        -> binary "is it raining now". Open-Meteo `precipitation` (mm) >=
-                   `rain_threshold_mm` (default 0.1). Exposed as a Matter
-                   `rain_state` cluster: "contact" (default, BooleanState) or
-                   "occupancy". Matter has no precipitation cluster, so a binary
-                   contact/occupancy is how a rain sensor surfaces here.
+  - rain        -> binary "is it raining now", resolved by `rain_sources` in
+                   priority order (first source with a definite answer wins):
+                     "rainviewer" -> real radar at the exact point (best),
+                     "metar"      -> station present-weather (needs metar_station),
+                     "model"      -> Open-Meteo precipitation >= rain_threshold_mm.
+                   Exposed as a Matter `rain_state` cluster: "contact" (default,
+                   BooleanState) or "occupancy". Matter has no precipitation
+                   cluster, so a binary contact/occupancy is how rain surfaces.
   - illuminance -> outdoor brightness. Open-Meteo `shortwave_radiation` (W/m^2)
                    x `lux_per_wm2` (default 120, daylight luminous efficacy) ->
                    lux, then the Matter log encoding.
@@ -65,6 +68,8 @@ DEFAULT_FIELDS = ["temperature", "humidity", "pressure"]
 # Fields a METAR station observation can supply (no radiation/precip amount).
 METAR_CAPABLE = ("temperature", "humidity", "pressure")
 RAIN_STATES = ("contact", "occupancy")
+RAIN_SOURCES = ("rainviewer", "metar", "model")
+DEFAULT_RAIN_SOURCES = ["rainviewer", "metar", "model"]
 
 
 @dataclass
@@ -80,6 +85,7 @@ class SensorConfig:
     metar_fields: list[str] = field(default_factory=lambda: ["temperature", "pressure"])
     rain_threshold_mm: float = 0.1
     rain_state: str = "contact"
+    rain_sources: list[str] = field(default_factory=lambda: list(DEFAULT_RAIN_SOURCES))
     lux_per_wm2: float = 120.0
 
     @classmethod
@@ -103,6 +109,13 @@ class SensorConfig:
         rain_state = d.get("rain_state", "contact")
         if rain_state not in RAIN_STATES:
             raise ValueError(f"sensor {dev_id!r}: rain_state must be one of {', '.join(RAIN_STATES)}")
+        rain_sources = list(d.get("rain_sources", DEFAULT_RAIN_SOURCES))
+        bad = [s for s in rain_sources if s not in RAIN_SOURCES]
+        if bad:
+            raise ValueError(f"sensor {dev_id!r}: unknown rain_sources {', '.join(bad)} "
+                             f"(choose from {', '.join(RAIN_SOURCES)})")
+        if not rain_sources:
+            raise ValueError(f"sensor {dev_id!r}: rain_sources is empty")
         return cls(
             id=d["id"],
             name=d.get("name", d["id"]),
@@ -116,6 +129,7 @@ class SensorConfig:
                           if f in METAR_CAPABLE],
             rain_threshold_mm=float(d.get("rain_threshold_mm", 0.1)),
             rain_state=rain_state,
+            rain_sources=rain_sources,
             lux_per_wm2=float(d.get("lux_per_wm2", 120.0)),
         )
 
@@ -128,6 +142,11 @@ class BridgeConfig:
     poll_interval: float = 600.0   # seconds between weather refreshes
     request_timeout: float = 15.0  # per outbound HTTP fetch
     user_agent: str = "matter-weather-sensor/0.1 (+https://github.com/dongnh)"
+    # RainViewer radar sampling (for the "rainviewer" rain source):
+    rainviewer_zoom: int = 7        # pin a zoom served as RGBA8 (~1 km/px at z7)
+    rainviewer_color: int = 2       # tile color scheme (2 = Universal Blue)
+    rainviewer_window: int = 1      # half-size of the sampled pixel window (1 -> 3x3)
+    rainviewer_alpha_min: int = 250  # opaque pixel = real echo; semi-transp = trace/context
     sensors: list[SensorConfig] = field(default_factory=list)
 
     @classmethod
@@ -147,5 +166,9 @@ class BridgeConfig:
             poll_interval=float(raw.get("poll_interval", 600.0)),
             request_timeout=float(raw.get("request_timeout", 15.0)),
             user_agent=raw.get("user_agent", cls.user_agent),
+            rainviewer_zoom=int(raw.get("rainviewer_zoom", 7)),
+            rainviewer_color=int(raw.get("rainviewer_color", 2)),
+            rainviewer_window=int(raw.get("rainviewer_window", 1)),
+            rainviewer_alpha_min=int(raw.get("rainviewer_alpha_min", 250)),
             sensors=sensors,
         )

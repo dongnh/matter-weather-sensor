@@ -11,8 +11,9 @@ SENSOR_CLUSTERS). To match the physical sensors we report the same raw units:
   - temperature : 0.01 C    -> round(temp_c * 100)               (cluster 1026)
   - humidity    : 0.01 %    -> round(rh_pct * 100)               (cluster 1029)
   - pressure    : 0.1 kPa   -> round(p_hpa)  (10 x kPa == hPa)   (cluster 1027)
-  - rain        : boolean   -> 1 if precip_mm >= threshold       (contact 69 /
-                               occupancy 1030; Matter has no precip cluster)
+  - rain        : boolean   -> 1 if reading.raining (resolved by              )
+                               providers.decide_rain: radar -> METAR -> model;
+                               contact 69 / occupancy 1030, Matter has no precip cluster
   - illuminance : log scale -> round(10000*log10(lux)+1)         (cluster 1024;
                                lux = radiation_wm2 * lux_per_wm2)
 """
@@ -40,9 +41,9 @@ def to_matter_states(reading: Reading, sensor: SensorConfig) -> dict[str, int]:
         states["humidity"] = int(round(reading.humidity_pct * 100))
     if "pressure" in fields and reading.pressure_hpa is not None:
         states["pressure"] = int(round(reading.pressure_hpa))
-    if "rain" in fields and reading.precipitation_mm is not None:
-        raining = 1 if reading.precipitation_mm >= sensor.rain_threshold_mm else 0
-        states[sensor.rain_state] = raining  # "contact" (default) or "occupancy"
+    if "rain" in fields and reading.raining is not None:
+        # `raining` is resolved by providers.decide_rain (radar -> METAR -> model).
+        states[sensor.rain_state] = 1 if reading.raining else 0  # "contact" or "occupancy"
     if "illuminance" in fields and reading.radiation_wm2 is not None:
         lux = max(1.0, reading.radiation_wm2 * sensor.lux_per_wm2)
         states["illuminance"] = max(1, int(round(10000 * math.log10(lux) + 1)))

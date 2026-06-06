@@ -48,14 +48,20 @@ class Reading:
     pressure_hpa: float | None = None
     precipitation_mm: float | None = None
     radiation_wm2: float | None = None
+    wx: str | None = None          # METAR present-weather string (e.g. "-RA", "TSRA")
+    raining: bool | None = None    # resolved rain decision (None = undetermined)
+    rain_source: str | None = None  # which source decided `raining`
     source: str = ""
     observed_at: str | None = None
 
     def merge(self, other: "Reading", only: list[str]) -> "Reading":
         """Return a copy with `only` fields taken from `other` when present."""
-        out = Reading(self.temperature_c, self.humidity_pct, self.pressure_hpa,
-                      self.precipitation_mm, self.radiation_wm2,
-                      self.source, self.observed_at)
+        out = Reading(
+            temperature_c=self.temperature_c, humidity_pct=self.humidity_pct,
+            pressure_hpa=self.pressure_hpa, precipitation_mm=self.precipitation_mm,
+            radiation_wm2=self.radiation_wm2, wx=self.wx,
+            source=self.source, observed_at=self.observed_at,
+        )
         applied = []
         if "temperature" in only and other.temperature_c is not None:
             out.temperature_c = other.temperature_c
@@ -121,9 +127,59 @@ async def fetch_metar(session, station: str, timeout: float, user_agent: str) ->
         temperature_c=temp,
         humidity_pct=rh,
         pressure_hpa=_as_float(o.get("altim")),  # QNH, hPa
+        wx=o.get("wxString"),  # present weather, e.g. "-RA", "TSRA"; None when clear
         source=f"metar:{station}",
         observed_at=o.get("reportTime"),
     )
+
+
+# METAR present-weather precipitation codes (drizzle, rain, snow, ice, hail, ...).
+_PRECIP_CODES = ("DZ", "RA", "SN", "SG", "PL", "GR", "GS", "IC", "UP")
+
+
+def present_weather_raining(wx: str | None) -> bool:
+    """True if a METAR present-weather string reports precipitation.
+
+    A valid METAR with no present-weather group (CAVOK / clear) has wx=None and
+    means "not precipitating" — a real observation, hence a definite False.
+    """
+    if not wx:
+        return False
+    return any(code in wx for code in _PRECIP_CODES)
+
+
+async def decide_rain(session, sensor: SensorConfig, cfg, model_precip: float | None,
+                      obs: Reading | None) -> tuple[bool | None, str]:
+    """Resolve "is it raining" by trying sensor.rain_sources in priority order.
+
+    The first source that returns a definite answer wins:
+      - rainviewer : real radar at the exact point (best); None if tile/API fails.
+      - metar      : station present-weather (real obs); needs a metar_station.
+      - model      : Open-Meteo precipitation >= rain_threshold_mm (always available).
+    """
+    from .rainviewer import radar_raining
+
+    for src in sensor.rain_sources:
+        if src == "rainviewer":
+            v = await radar_raining(session, sensor.latitude, sensor.longitude, cfg)
+            if v is not None:
+                return v, "rainviewer"
+        elif src == "metar":
+            o = obs
+            if o is None and sensor.metar_station:
+                try:
+                    o = await fetch_metar(session, sensor.metar_station,
+                                          cfg.request_timeout, cfg.user_agent)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("[%s] METAR %s rain check failed (%s)",
+                                sensor.id, sensor.metar_station, exc)
+                    o = None
+            if o is not None:
+                return present_weather_raining(o.wx), f"metar:{sensor.metar_station}"
+        elif src == "model":
+            if model_precip is not None:
+                return model_precip >= sensor.rain_threshold_mm, "model"
+    return None, "none"
 
 
 async def fetch_reading(session, sensor: SensorConfig, cfg) -> Reading:
@@ -133,14 +189,24 @@ async def fetch_reading(session, sensor: SensorConfig, cfg) -> Reading:
                                  cfg.request_timeout, cfg.user_agent)
 
     reading = await fetch_open_meteo(session, sensor, cfg.request_timeout)
-    if sensor.metar_station and sensor.metar_fields:
+
+    obs: Reading | None = None
+    if sensor.metar_station:
         try:
             obs = await fetch_metar(session, sensor.metar_station,
                                     cfg.request_timeout, cfg.user_agent)
-            reading = reading.merge(obs, only=sensor.metar_fields)
         except Exception as exc:  # noqa: BLE001 - METAR is best-effort enrichment
-            log.warning("[%s] METAR %s blend failed (%s); using model only",
-                        sensor.id, sensor.metar_station, exc)
+            log.warning("[%s] METAR %s fetch failed (%s)", sensor.id, sensor.metar_station, exc)
+    if obs is not None:
+        # Only override fields this sensor actually exposes.
+        only = [f for f in sensor.metar_fields if f in sensor.fields]
+        if only:
+            reading = reading.merge(obs, only=only)
+
+    if "rain" in sensor.fields:
+        reading.raining, reading.rain_source = await decide_rain(
+            session, sensor, cfg, model_precip=reading.precipitation_mm, obs=obs)
+
     return reading
 
 

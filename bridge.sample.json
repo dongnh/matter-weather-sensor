@@ -22,6 +22,8 @@
       "longitude": 105.8542,
       "fields": ["rain"],
       "model": "ecmwf_ifs025",
+      "metar_station": "VVNB",
+      "rain_sources": ["rainviewer", "metar", "model"],
       "rain_threshold_mm": 0.1,
       "rain_state": "contact"
     },
