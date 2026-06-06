@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matter-weather-sensor"
-version = "0.2.0"
+version = "0.3.0"
 description = "Logical bridge exposing free weather-API readings as temperature/humidity/pressure/rain/illuminance sensors to matter_webcontrol"
 readme = "README.md"
 requires-python = ">=3.11"

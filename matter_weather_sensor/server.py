@@ -70,7 +70,14 @@ class WeatherBridge:
         dev_id = request.query.get("id")
         if not dev_id or dev_id not in self.sensors:
             raise web.HTTPNotFound(reason=f"unknown sensor {dev_id}")
-        return web.json_response({"id": dev_id, **self.state.states(dev_id)})
+        body = {"id": dev_id, **self.state.states(dev_id)}
+        r = self.state.reading(dev_id)
+        if r is not None and r.raining is not None:
+            # Rain intensity is informational (Matter has no precip-rate cluster).
+            body["rain_intensity"] = r.rain_intensity
+            body["rain_rate_mm_h"] = r.rain_rate_mm_h
+            body["rain_dbz"] = r.rain_dbz
+        return web.json_response(body)
 
     async def subscribe(self, request: web.Request) -> web.StreamResponse:
         dev_id = request.query.get("id")
@@ -124,6 +131,9 @@ class WeatherBridge:
                     "radiation_wm2": r.radiation_wm2,
                     "raining": r.raining,
                     "rain_source": r.rain_source,
+                    "rain_intensity": r.rain_intensity,
+                    "rain_rate_mm_h": r.rain_rate_mm_h,
+                    "rain_dbz": r.rain_dbz,
                     "wx": r.wx,
                     "source": r.source,
                     "observed_at": r.observed_at,

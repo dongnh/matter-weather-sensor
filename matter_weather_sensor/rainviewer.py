@@ -100,11 +100,57 @@ def _decode_rgba8(data: bytes):
     return w, h, out
 
 
-async def radar_raining(session, lat: float, lon: float, cfg) -> bool | None:
-    """True/False if radar shows precipitation at the point, or None if unavailable.
+# Universal Blue (color scheme 2) discrete opaque palette -> approx reflectivity
+# (dBZ). Verified against live tiles: opaque echoes step through these 9 colors
+# from light drizzle to extreme/hail; the faint semi-transparent "trace" layer
+# (alpha < rainviewer_alpha_min) is a different, lighter band and is excluded.
+_UB_DBZ = (
+    ((136, 221, 238), 20.0),  # light cyan
+    ((0, 163, 224), 25.0),    # blue
+    ((0, 119, 170), 30.0),    # darker blue
+    ((0, 85, 136), 35.0),     # deep blue
+    ((255, 238, 0), 40.0),    # yellow
+    ((255, 170, 0), 45.0),    # orange
+    ((255, 68, 0), 50.0),     # red-orange
+    ((193, 0, 0), 55.0),      # dark red
+    ((255, 170, 255), 60.0),  # magenta (hail / violent)
+)
 
-    None means "couldn't decide from radar" (API/tile error, or a non-RGBA tile);
-    the caller should fall through to the next rain source.
+
+def _nearest_dbz(rgb: tuple[int, int, int]) -> float:
+    best, best_d = 0.0, None
+    for (r, g, b), dbz in _UB_DBZ:
+        d = (r - rgb[0]) ** 2 + (g - rgb[1]) ** 2 + (b - rgb[2]) ** 2
+        if best_d is None or d < best_d:
+            best_d, best = d, dbz
+    return best
+
+
+def dbz_to_rate(dbz: float) -> float:
+    """Reflectivity (dBZ) -> rain rate (mm/h) via Marshall-Palmer (Z = 200 R^1.6)."""
+    return (10 ** (dbz / 10.0) / 200.0) ** (1.0 / 1.6)
+
+
+def rate_to_level(rate: float | None) -> str:
+    """Rain rate (mm/h) -> a coarse intensity word (standard WMO-ish bands)."""
+    if not rate or rate <= 0:
+        return "none"
+    if rate < 2.5:
+        return "light"
+    if rate < 7.6:
+        return "moderate"
+    if rate < 50.0:
+        return "heavy"
+    return "violent"
+
+
+async def radar_rain(session, lat: float, lon: float, cfg) -> dict | None:
+    """Radar precipitation at the point: {raining, level, rate_mm_h, dbz, color}.
+
+    Returns None if radar couldn't decide (API/tile error or a non-RGBA tile) so
+    the caller falls through to the next rain source. The intensity is taken from
+    the STRONGEST opaque pixel in the sampled window (the heaviest echo near the
+    point), mapped color -> dBZ -> mm/h.
     """
     try:
         async with session.get(RAINVIEWER_MAPS_URL, timeout=cfg.request_timeout) as resp:
@@ -122,13 +168,28 @@ async def radar_raining(session, lat: float, lon: float, cfg) -> bool | None:
             png = await resp.read()
         w, h, rgba = _decode_rgba8(png)
         rad = cfg.rainviewer_window
+        max_dbz: float | None = None
+        max_color = None
         for dy in range(-rad, rad + 1):
             for dx in range(-rad, rad + 1):
                 x = min(w - 1, max(0, px + dx))
                 y = min(h - 1, max(0, py + dy))
-                if rgba[(y * w + x) * 4 + 3] >= cfg.rainviewer_alpha_min:
-                    return True
-        return False
+                o = (y * w + x) * 4
+                if rgba[o + 3] >= cfg.rainviewer_alpha_min:
+                    rgb = (rgba[o], rgba[o + 1], rgba[o + 2])
+                    dbz = _nearest_dbz(rgb)
+                    if max_dbz is None or dbz > max_dbz:
+                        max_dbz, max_color = dbz, rgb
+        if max_dbz is None:
+            return {"raining": False, "level": "none", "rate_mm_h": None, "dbz": None, "color": None}
+        rate = dbz_to_rate(max_dbz)
+        return {
+            "raining": True,
+            "level": rate_to_level(rate),
+            "rate_mm_h": round(rate, 1),
+            "dbz": max_dbz,
+            "color": max_color,
+        }
     except Exception as exc:  # noqa: BLE001 - radar is best-effort; degrade to next source
         log.warning("rainviewer radar check failed (%s); falling through", exc)
         return None

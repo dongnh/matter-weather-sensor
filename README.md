@@ -90,8 +90,29 @@ Choose how the result appears with `rain_state`:
 - `"occupancy"` → an **Occupancy** sensor; handy if you want light_programmer's
   occupancy gating to react to rain.
 
-`/api/health` shows which source decided (`rain_source`) and the raw METAR
-present-weather (`wx`), so you can see *why* it says rain or dry.
+**Rain intensity.** Beyond the yes/no, the radar source reads the *colour* of the
+echo at your point — RainViewer renders reflectivity as a colour ramp (light cyan
+→ blue → yellow → orange → red → magenta). That colour is mapped to **dBZ** and to
+a **rain rate (mm/h)** via the Marshall-Palmer relation, then bucketed into a
+level: `light` / `moderate` / `heavy` / `violent`. (METAR contributes a coarse
+level from its `-`/`+` intensity prefix; the model from its mm.) Matter has no
+precipitation-rate cluster, so the binary contact/occupancy is unchanged — the
+intensity is exposed as **informational** fields on `/api/sensor`, `/api/health`
+and the `test` output:
+
+```bash
+matter-weather-sensor test --config bridge.json
+# dev_rain_hanoi (Hanoi Rain): RAIN[rainviewer] heavy ~12mm/h 40dBZ
+```
+
+```jsonc
+// GET /api/sensor?id=dev_rain_hanoi
+{ "id": "dev_rain_hanoi", "contact": 1,
+  "rain_intensity": "heavy", "rain_rate_mm_h": 11.5, "rain_dbz": 40.0 }
+```
+
+`/api/health` additionally shows which source decided (`rain_source`) and the raw
+METAR present-weather (`wx`), so you can see *why* it says rain or dry.
 
 ### Brightness (illuminance)
 

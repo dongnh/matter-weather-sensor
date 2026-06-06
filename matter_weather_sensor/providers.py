@@ -51,6 +51,9 @@ class Reading:
     wx: str | None = None          # METAR present-weather string (e.g. "-RA", "TSRA")
     raining: bool | None = None    # resolved rain decision (None = undetermined)
     rain_source: str | None = None  # which source decided `raining`
+    rain_intensity: str | None = None   # "none"/"light"/"moderate"/"heavy"/"violent"
+    rain_rate_mm_h: float | None = None  # estimated rain rate (mm/h), if known
+    rain_dbz: float | None = None        # radar reflectivity at the point (dBZ), if known
     source: str = ""
     observed_at: str | None = None
 
@@ -137,33 +140,46 @@ async def fetch_metar(session, station: str, timeout: float, user_agent: str) ->
 _PRECIP_CODES = ("DZ", "RA", "SN", "SG", "PL", "GR", "GS", "IC", "UP")
 
 
-def present_weather_raining(wx: str | None) -> bool:
-    """True if a METAR present-weather string reports precipitation.
+def present_weather_rain(wx: str | None) -> tuple[bool, str]:
+    """(raining, intensity) from a METAR present-weather string.
 
+    METAR encodes intensity as a prefix: "-" light, none moderate, "+" heavy.
     A valid METAR with no present-weather group (CAVOK / clear) has wx=None and
-    means "not precipitating" — a real observation, hence a definite False.
+    means "not precipitating" — a real observation, hence a definite (False, "none").
     """
-    if not wx:
-        return False
-    return any(code in wx for code in _PRECIP_CODES)
+    if not wx or not any(code in wx for code in _PRECIP_CODES):
+        return False, "none"
+    if "+" in wx:
+        return True, "heavy"
+    if "-" in wx:
+        return True, "light"
+    return True, "moderate"
+
+
+# Open-Meteo `current` covers a 900 s (15 min) step; scale its mm to an mm/h rate.
+_MODEL_MM_TO_RATE = 3600.0 / 900.0
 
 
 async def decide_rain(session, sensor: SensorConfig, cfg, model_precip: float | None,
-                      obs: Reading | None) -> tuple[bool | None, str]:
-    """Resolve "is it raining" by trying sensor.rain_sources in priority order.
+                      obs: Reading | None) -> dict:
+    """Resolve rain by trying sensor.rain_sources in priority order.
 
-    The first source that returns a definite answer wins:
-      - rainviewer : real radar at the exact point (best); None if tile/API fails.
-      - metar      : station present-weather (real obs); needs a metar_station.
+    Returns {raining, source, level, rate_mm_h, dbz}. The first source with a
+    definite answer wins:
+      - rainviewer : real radar at the exact point (best); also yields intensity
+                     (color -> dBZ -> mm/h). None if tile/API fails -> fall through.
+      - metar      : station present-weather + intensity prefix; needs metar_station.
       - model      : Open-Meteo precipitation >= rain_threshold_mm (always available).
     """
-    from .rainviewer import radar_raining
+    from .rainviewer import radar_rain, rate_to_level
 
     for src in sensor.rain_sources:
         if src == "rainviewer":
-            v = await radar_raining(session, sensor.latitude, sensor.longitude, cfg)
-            if v is not None:
-                return v, "rainviewer"
+            res = await radar_rain(session, sensor.latitude, sensor.longitude, cfg)
+            if res is not None:
+                return {"raining": res["raining"], "source": "rainviewer",
+                        "level": res["level"], "rate_mm_h": res["rate_mm_h"],
+                        "dbz": res["dbz"]}
         elif src == "metar":
             o = obs
             if o is None and sensor.metar_station:
@@ -175,11 +191,17 @@ async def decide_rain(session, sensor: SensorConfig, cfg, model_precip: float | 
                                 sensor.id, sensor.metar_station, exc)
                     o = None
             if o is not None:
-                return present_weather_raining(o.wx), f"metar:{sensor.metar_station}"
+                raining, level = present_weather_rain(o.wx)
+                return {"raining": raining, "source": f"metar:{sensor.metar_station}",
+                        "level": level, "rate_mm_h": None, "dbz": None}
         elif src == "model":
             if model_precip is not None:
-                return model_precip >= sensor.rain_threshold_mm, "model"
-    return None, "none"
+                rate = model_precip * _MODEL_MM_TO_RATE
+                raining = model_precip >= sensor.rain_threshold_mm
+                return {"raining": raining, "source": "model",
+                        "level": rate_to_level(rate) if raining else "none",
+                        "rate_mm_h": round(rate, 1), "dbz": None}
+    return {"raining": None, "source": "none", "level": None, "rate_mm_h": None, "dbz": None}
 
 
 async def fetch_reading(session, sensor: SensorConfig, cfg) -> Reading:
@@ -204,8 +226,13 @@ async def fetch_reading(session, sensor: SensorConfig, cfg) -> Reading:
             reading = reading.merge(obs, only=only)
 
     if "rain" in sensor.fields:
-        reading.raining, reading.rain_source = await decide_rain(
-            session, sensor, cfg, model_precip=reading.precipitation_mm, obs=obs)
+        rr = await decide_rain(session, sensor, cfg,
+                               model_precip=reading.precipitation_mm, obs=obs)
+        reading.raining = rr["raining"]
+        reading.rain_source = rr["source"]
+        reading.rain_intensity = rr["level"]
+        reading.rain_rate_mm_h = rr["rate_mm_h"]
+        reading.rain_dbz = rr["dbz"]
 
     return reading
 

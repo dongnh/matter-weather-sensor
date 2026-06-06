@@ -58,7 +58,14 @@ async def _test(args) -> int:
                 human.append(f"{r.pressure_hpa:.0f}hPa")
             if "rain" in sensor.fields and r.raining is not None:
                 tag = "RAIN" if r.raining else "dry"
-                human.append(f"{tag}[{r.rain_source}]")
+                bits = f"{tag}[{r.rain_source}]"
+                if r.raining and r.rain_intensity and r.rain_intensity != "none":
+                    bits += f" {r.rain_intensity}"
+                    if r.rain_rate_mm_h is not None:
+                        bits += f" ~{r.rain_rate_mm_h}mm/h"
+                    if r.rain_dbz is not None:
+                        bits += f" {r.rain_dbz:.0f}dBZ"
+                human.append(bits)
             if "illuminance" in sensor.fields and r.radiation_wm2 is not None:
                 human.append(f"{r.radiation_wm2 * sensor.lux_per_wm2:.0f}lux")
             print(f"{sensor.id} ({sensor.name}): {'  '.join(human)}")
