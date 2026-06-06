@@ -1,0 +1,153 @@
+"""Weather data sources.
+
+Two providers, both free and key-less:
+
+  - Open-Meteo (https://open-meteo.com) — model output at exact coordinates.
+    Default model ``ecmwf_ifs025`` (ECMWF IFS); for Hanoi this tracks the Noi
+    Bai station within ~0.7 C / a few % RH, while GFS/JMA run too hot and dry.
+    Supplies every field: temperature, humidity, pressure (``pressure_msl``,
+    sea-level / barometer), precipitation (mm, for rain) and shortwave radiation
+    (W/m^2, for outdoor brightness).
+
+  - METAR (https://aviationweather.gov) — the actual hourly observation from an
+    airport station. Real measurement, but only temperature / dewpoint / QNH.
+    Used to override the model for the fields that travel well over distance
+    (temperature, pressure).
+
+A :class:`Reading` carries whichever measurements a source could supply; missing
+ones stay ``None`` and are simply not exposed as Matter states.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from dataclasses import dataclass
+
+from .config import SensorConfig
+
+log = logging.getLogger(__name__)
+
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+METAR_URL = "https://aviationweather.gov/api/data/metar"
+
+# config field -> Open-Meteo `current` variable
+_OM_VAR = {
+    "temperature": "temperature_2m",
+    "humidity": "relative_humidity_2m",
+    "pressure": "pressure_msl",
+    "rain": "precipitation",
+    "illuminance": "shortwave_radiation",
+}
+
+
+@dataclass
+class Reading:
+    temperature_c: float | None = None
+    humidity_pct: float | None = None
+    pressure_hpa: float | None = None
+    precipitation_mm: float | None = None
+    radiation_wm2: float | None = None
+    source: str = ""
+    observed_at: str | None = None
+
+    def merge(self, other: "Reading", only: list[str]) -> "Reading":
+        """Return a copy with `only` fields taken from `other` when present."""
+        out = Reading(self.temperature_c, self.humidity_pct, self.pressure_hpa,
+                      self.precipitation_mm, self.radiation_wm2,
+                      self.source, self.observed_at)
+        applied = []
+        if "temperature" in only and other.temperature_c is not None:
+            out.temperature_c = other.temperature_c
+            applied.append("temperature")
+        if "pressure" in only and other.pressure_hpa is not None:
+            out.pressure_hpa = other.pressure_hpa
+            applied.append("pressure")
+        if "humidity" in only and other.humidity_pct is not None:
+            out.humidity_pct = other.humidity_pct
+            applied.append("humidity")
+        if applied:
+            out.source = f"{self.source}+{other.source}({','.join(applied)})"
+        return out
+
+
+def relative_humidity(temp_c: float, dewpoint_c: float) -> float:
+    """RH (%) from temperature and dewpoint via the Magnus formula."""
+    a, b = 17.625, 243.04
+    gamma_d = (a * dewpoint_c) / (b + dewpoint_c)
+    gamma_t = (a * temp_c) / (b + temp_c)
+    rh = 100.0 * math.exp(gamma_d - gamma_t)
+    return max(0.0, min(100.0, rh))
+
+
+async def fetch_open_meteo(session, sensor: SensorConfig, timeout: float) -> Reading:
+    variables = [_OM_VAR[f] for f in sensor.fields]
+    params = {
+        "latitude": sensor.latitude,
+        "longitude": sensor.longitude,
+        "current": ",".join(variables),
+        "timezone": "UTC",
+    }
+    if sensor.model and sensor.model != "best_match":
+        params["models"] = sensor.model
+    async with session.get(OPEN_METEO_URL, params=params, timeout=timeout) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+    cur = data.get("current") or {}
+    return Reading(
+        temperature_c=_as_float(cur.get("temperature_2m")),
+        humidity_pct=_as_float(cur.get("relative_humidity_2m")),
+        pressure_hpa=_as_float(cur.get("pressure_msl")),
+        precipitation_mm=_as_float(cur.get("precipitation")),
+        radiation_wm2=_as_float(cur.get("shortwave_radiation")),
+        source=f"open-meteo:{sensor.model}",
+        observed_at=cur.get("time"),
+    )
+
+
+async def fetch_metar(session, station: str, timeout: float, user_agent: str) -> Reading:
+    params = {"ids": station, "format": "json"}
+    headers = {"User-Agent": user_agent}
+    async with session.get(METAR_URL, params=params, headers=headers, timeout=timeout) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+    if not data:
+        raise RuntimeError(f"no METAR for station {station}")
+    o = data[0]
+    temp = _as_float(o.get("temp"))
+    dewp = _as_float(o.get("dewp"))
+    rh = relative_humidity(temp, dewp) if temp is not None and dewp is not None else None
+    return Reading(
+        temperature_c=temp,
+        humidity_pct=rh,
+        pressure_hpa=_as_float(o.get("altim")),  # QNH, hPa
+        source=f"metar:{station}",
+        observed_at=o.get("reportTime"),
+    )
+
+
+async def fetch_reading(session, sensor: SensorConfig, cfg) -> Reading:
+    """Fetch a sensor's reading, applying the optional METAR blend/override."""
+    if sensor.provider == "metar":
+        return await fetch_metar(session, sensor.metar_station,
+                                 cfg.request_timeout, cfg.user_agent)
+
+    reading = await fetch_open_meteo(session, sensor, cfg.request_timeout)
+    if sensor.metar_station and sensor.metar_fields:
+        try:
+            obs = await fetch_metar(session, sensor.metar_station,
+                                    cfg.request_timeout, cfg.user_agent)
+            reading = reading.merge(obs, only=sensor.metar_fields)
+        except Exception as exc:  # noqa: BLE001 - METAR is best-effort enrichment
+            log.warning("[%s] METAR %s blend failed (%s); using model only",
+                        sensor.id, sensor.metar_station, exc)
+    return reading
+
+
+def _as_float(v) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matter-weather-sensor"
+version = "0.1.0"
+description = "Logical bridge exposing free weather-API readings as temperature/humidity/pressure/rain/illuminance sensors to matter_webcontrol"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Nguyen Ha Dong" }]
+# Polls public weather APIs (Open-Meteo, optionally an aviationweather.gov METAR
+# station) and serves the result over aiohttp as Matter sensor states.
+dependencies = [
+    "aiohttp>=3.9",
+]
+
+[project.scripts]
+matter-weather-sensor = "matter_weather_sensor.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["matter_weather_sensor*"]

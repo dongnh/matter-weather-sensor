@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Weather sensor service. Runs on any always-on host with outbound internet
+     (e.g. the home server). It does not need to be near any device or have a GUI
+     session — it just polls a public weather API and serves Matter sensor states.
+
+     Adjust the paths/user below, then:
+       cp deploy/home.weather.sensor.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/home.weather.sensor.plist
+       launchctl kickstart -k gui/$(id -u)/home.weather.sensor
+
+     Then point matter_webcontrol at this host (once; cached in bridge_cache.json):
+       curl 'http://<matter-host>:8080/api/bridge?ip=127.0.0.1&port=8093' -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>home.weather.sensor</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/.matter-weather-sensor/venv/bin/matter-weather-sensor</string>
+        <string>serve</string>
+        <string>--config</string>
+        <string>/Users/USERNAME/.matter-weather-sensor/bridge.json</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/USERNAME/.matter-weather-sensor/bridge.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/USERNAME/.matter-weather-sensor/bridge.log</string>
+</dict>
+</plist>

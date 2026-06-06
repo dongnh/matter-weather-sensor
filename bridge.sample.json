@@ -1,0 +1,38 @@
+{
+  "host": "0.0.0.0",
+  "port": 8093,
+  "api_key": null,
+  "poll_interval": 600,
+  "sensors": [
+    {
+      "id": "dev_weather_hanoi",
+      "name": "Hanoi Weather",
+      "latitude": 21.0285,
+      "longitude": 105.8542,
+      "fields": ["temperature", "humidity", "pressure"],
+      "provider": "open-meteo",
+      "model": "ecmwf_ifs025",
+      "metar_station": "VVNB",
+      "metar_fields": ["temperature", "pressure"]
+    },
+    {
+      "id": "dev_rain_hanoi",
+      "name": "Hanoi Rain",
+      "latitude": 21.0285,
+      "longitude": 105.8542,
+      "fields": ["rain"],
+      "model": "ecmwf_ifs025",
+      "rain_threshold_mm": 0.1,
+      "rain_state": "contact"
+    },
+    {
+      "id": "dev_brightness_hanoi",
+      "name": "Hanoi Brightness",
+      "latitude": 21.0285,
+      "longitude": 105.8542,
+      "fields": ["illuminance"],
+      "model": "ecmwf_ifs025",
+      "lux_per_wm2": 120
+    }
+  ]
+}
