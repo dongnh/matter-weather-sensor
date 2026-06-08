@@ -166,15 +166,23 @@ async def decide_rain(session, sensor: SensorConfig, cfg, model_precip: float | 
 
     Returns {raining, source, level, rate_mm_h, dbz}. The first source with a
     definite answer wins:
+      - applewx    : Apple WeatherKit precipitationIntensity (mm/h) at the point —
+                     the iOS Weather app's own realtime rate. None on auth/fetch
+                     failure -> fall through.
       - rainviewer : real radar at the exact point (best); also yields intensity
                      (color -> dBZ -> mm/h). None if tile/API fails -> fall through.
       - metar      : station present-weather + intensity prefix; needs metar_station.
       - model      : Open-Meteo precipitation >= rain_threshold_mm (always available).
     """
     from .rainviewer import radar_rain, rate_to_level
+    from .weatherkit import weatherkit_rain
 
     for src in sensor.rain_sources:
-        if src == "rainviewer":
+        if src == "applewx":
+            res = await weatherkit_rain(session, sensor, cfg)
+            if res is not None:
+                return res
+        elif src == "rainviewer":
             res = await radar_rain(session, sensor.latitude, sensor.longitude, cfg)
             if res is not None:
                 return {"raining": res["raining"], "source": "rainviewer",

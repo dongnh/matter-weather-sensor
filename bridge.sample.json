@@ -3,6 +3,11 @@
   "port": 8093,
   "api_key": null,
   "poll_interval": 600,
+  "_comment_weatherkit": "Only needed when a sensor uses the 'applewx' rain source. Apple Developer key; keep these LOCAL (gitignored), never commit real values. The .p8 path points outside the repo.",
+  "weatherkit_key_path": "/path/to/AuthKey.p8",
+  "weatherkit_key_id": "YOUR_KEY_ID",
+  "weatherkit_team_id": "YOUR_TEAM_ID",
+  "weatherkit_service_id": "com.example.weather",
   "sensors": [
     {
       "id": "dev_weather_hanoi",
@@ -23,8 +28,9 @@
       "fields": ["rain"],
       "model": "ecmwf_ifs025",
       "metar_station": "VVNB",
-      "rain_sources": ["rainviewer", "metar", "model"],
+      "rain_sources": ["applewx", "rainviewer", "metar", "model"],
       "rain_threshold_mm": 0.1,
+      "applewx_threshold_mm_h": 0.1,
       "rain_state": "rain"
     },
     {

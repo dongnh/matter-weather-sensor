@@ -42,7 +42,7 @@ def to_matter_states(reading: Reading, sensor: SensorConfig) -> dict[str, int]:
     if "pressure" in fields and reading.pressure_hpa is not None:
         states["pressure"] = int(round(reading.pressure_hpa))
     if "rain" in fields and reading.raining is not None:
-        # `raining` is resolved by providers.decide_rain (radar -> METAR -> model).
+        # `raining` is resolved by providers.decide_rain (applewx -> radar -> METAR -> model).
         states[sensor.rain_state] = 1 if reading.raining else 0  # "contact" or "occupancy"
     if "illuminance" in fields and reading.radiation_wm2 is not None:
         lux = max(1.0, reading.radiation_wm2 * sensor.lux_per_wm2)
@@ -77,8 +77,23 @@ class WeatherState:
         states = to_matter_states(reading, sensor)
         if states and states != self._states.get(dev_id):
             self._states[dev_id] = states
-            log.info("%s -> %s (%s)", dev_id, states, reading.source)
+            log.info("%s -> %s (%s)", dev_id, states, self._source_label(reading, sensor))
             self._fanout(dev_id, states, ts)
+
+    @staticmethod
+    def _source_label(reading: Reading, sensor: SensorConfig) -> str:
+        """Source string for the log: surface the rain decider, not just the model.
+
+        A rain sensor still fetches the model (for the open-meteo call), so
+        ``reading.source`` reads "open-meteo:..." even when the rain decision came
+        from radar/WeatherKit. Prefer ``rain_source`` so the log names what actually
+        decided the state.
+        """
+        if "rain" in sensor.fields and reading.rain_source:
+            if len(sensor.fields) > 1:
+                return f"{reading.source}; rain={reading.rain_source}"
+            return reading.rain_source
+        return reading.source
 
     def _fanout(self, dev_id: str, states: dict[str, int], ts: float) -> None:
         for q in self._subs.get(dev_id, ()):

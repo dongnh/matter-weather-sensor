@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matter-weather-sensor"
-version = "0.4.0"
+version = "0.5.0"
 description = "Logical bridge exposing free weather-API readings as temperature/humidity/pressure/rain/illuminance sensors to matter_webcontrol"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,11 @@ authors = [{ name = "Nguyen Ha Dong" }]
 dependencies = [
     "aiohttp>=3.9",
 ]
+
+[project.optional-dependencies]
+# Apple WeatherKit rain source ("applewx") signs an ES256 JWT per the Apple
+# Developer key; only needed when a sensor uses that source.
+applewx = ["pyjwt[crypto]>=2.8"]
 
 [project.scripts]
 matter-weather-sensor = "matter_weather_sensor.cli:main"

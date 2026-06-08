@@ -39,6 +39,9 @@ Fields (subset of these per sensor):
   - temperature / humidity / pressure -> Matter temp / humidity / pressure.
   - rain        -> binary "is it raining now", resolved by `rain_sources` in
                    priority order (first source with a definite answer wins):
+                     "applewx"    -> Apple WeatherKit precipitationIntensity (mm/h)
+                                     >= applewx_threshold_mm_h; needs the global
+                                     weatherkit_* credentials (Apple Developer key),
                      "rainviewer" -> real radar at the exact point (best),
                      "metar"      -> station present-weather (needs metar_station),
                      "model"      -> Open-Meteo precipitation >= rain_threshold_mm.
@@ -70,7 +73,7 @@ DEFAULT_FIELDS = ["temperature", "humidity", "pressure"]
 # Fields a METAR station observation can supply (no radiation/precip amount).
 METAR_CAPABLE = ("temperature", "humidity", "pressure")
 RAIN_STATES = ("rain", "contact", "occupancy")
-RAIN_SOURCES = ("rainviewer", "metar", "model")
+RAIN_SOURCES = ("applewx", "rainviewer", "metar", "model")
 DEFAULT_RAIN_SOURCES = ["rainviewer", "metar", "model"]
 
 
@@ -86,6 +89,7 @@ class SensorConfig:
     metar_station: str = ""
     metar_fields: list[str] = field(default_factory=lambda: ["temperature", "pressure"])
     rain_threshold_mm: float = 0.1
+    applewx_threshold_mm_h: float = 0.1  # WeatherKit precipitationIntensity (mm/h) to call it rain
     rain_state: str = "rain"
     rain_sources: list[str] = field(default_factory=lambda: list(DEFAULT_RAIN_SOURCES))
     lux_per_wm2: float = 120.0
@@ -130,6 +134,7 @@ class SensorConfig:
             metar_fields=[f for f in d.get("metar_fields", ["temperature", "pressure"])
                           if f in METAR_CAPABLE],
             rain_threshold_mm=float(d.get("rain_threshold_mm", 0.1)),
+            applewx_threshold_mm_h=float(d.get("applewx_threshold_mm_h", 0.1)),
             rain_state=rain_state,
             rain_sources=rain_sources,
             lux_per_wm2=float(d.get("lux_per_wm2", 120.0)),
@@ -149,6 +154,13 @@ class BridgeConfig:
     rainviewer_color: int = 2       # tile color scheme (2 = Universal Blue)
     rainviewer_window: int = 1      # half-size of the sampled pixel window (1 -> 3x3)
     rainviewer_alpha_min: int = 250  # opaque pixel = real echo; semi-transp = trace/context
+    # Apple WeatherKit credentials (only needed when a sensor uses the "applewx"
+    # rain source). One key serves every coordinate.
+    weatherkit_key_path: str = ""     # path to the .p8 private key
+    weatherkit_key_id: str = ""       # 10-char Key ID
+    weatherkit_team_id: str = ""      # 10-char Team ID
+    weatherkit_service_id: str = ""   # registered Service ID (e.g. com.example.weather)
+    weatherkit_token_ttl: float = 3600.0  # seconds a signed JWT stays valid
     sensors: list[SensorConfig] = field(default_factory=list)
 
     @classmethod
@@ -161,6 +173,20 @@ class BridgeConfig:
         ids = [s.id for s in sensors]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate sensor ids in bridge.json")
+        wk_key_path = raw.get("weatherkit_key_path", "")
+        wk_key_id = raw.get("weatherkit_key_id", "")
+        wk_team_id = raw.get("weatherkit_team_id", "")
+        wk_service_id = raw.get("weatherkit_service_id", "")
+        if any("applewx" in s.rain_sources for s in sensors):
+            missing = [k for k, v in (
+                ("weatherkit_key_path", wk_key_path),
+                ("weatherkit_key_id", wk_key_id),
+                ("weatherkit_team_id", wk_team_id),
+                ("weatherkit_service_id", wk_service_id),
+            ) if not v]
+            if missing:
+                raise ValueError("rain source 'applewx' needs "
+                                 f"{', '.join(missing)} in bridge.json")
         return cls(
             host=raw.get("host", "0.0.0.0"),
             port=int(raw.get("port", 8093)),
@@ -172,5 +198,10 @@ class BridgeConfig:
             rainviewer_color=int(raw.get("rainviewer_color", 2)),
             rainviewer_window=int(raw.get("rainviewer_window", 1)),
             rainviewer_alpha_min=int(raw.get("rainviewer_alpha_min", 250)),
+            weatherkit_key_path=wk_key_path,
+            weatherkit_key_id=wk_key_id,
+            weatherkit_team_id=wk_team_id,
+            weatherkit_service_id=wk_service_id,
+            weatherkit_token_ttl=float(raw.get("weatherkit_token_ttl", 3600.0)),
             sensors=sensors,
         )

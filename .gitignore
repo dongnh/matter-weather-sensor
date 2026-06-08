@@ -8,3 +8,5 @@ dist/
 venv/
 bridge.json
 *.log
+# Apple WeatherKit private key — keep credentials local, never commit.
+*.p8
